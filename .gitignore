@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+
+# Exceptions: keep the example template
+!.env.example
+
+# Generated model artifacts
+artifacts/
+*.joblib
+
+# DVC cache
+.dvc/cache/
+
+# Temporary files
+*.log
+.vscode/
