@@ -1,0 +1,17 @@
+data:
+  path: data/raw/breast_cancer.csv
+  target_column: target
+
+training:
+  test_size: 0.2
+  random_state: 42
+  cv_folds: 5
+  scoring: recall
+  minimum_malignant_recall: 0.95
+
+models:
+  logistic_regression:
+    max_iter: 2000
+  random_forest:
+    n_estimators: 200
+    max_depth: null

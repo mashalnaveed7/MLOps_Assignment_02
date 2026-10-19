@@ -1,0 +1,16 @@
+stages:
+  train:
+    cmd: python training/train.py
+    deps:
+      - training/train.py
+      - data/raw/breast_cancer.csv
+      - params.yaml
+    params:
+      - training
+      - models
+      - data
+    outs:
+      - artifacts/model.joblib
+    metrics:
+      - artifacts/metrics.json:
+          cache: false
