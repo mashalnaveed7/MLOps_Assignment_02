@@ -1,8 +1,10 @@
 from pathlib import Path
 from threading import Lock
+import os
 
 import joblib
 import pandas as pd
+import redis
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -21,6 +23,26 @@ _feature_names = None
 _stats_lock = Lock()
 _stats = {"total_predictions": 0, "malignant_predictions": 0, "benign_predictions": 0}
 
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", "6379")),
+    decode_responses=True,
+    socket_connect_timeout=1,
+)
+
+
+def update_stats(prediction):
+    key = "malignant_predictions" if prediction == 0 else "benign_predictions"
+    try:
+        with redis_client.pipeline() as pipe:
+            pipe.incr("total_predictions")
+            pipe.incr(key)
+            pipe.execute()
+    except redis.RedisError:
+        with _stats_lock:
+            _stats["total_predictions"] += 1
+            _stats[key] += 1
+
 
 def load_model():
     global _model, _feature_names
@@ -33,7 +55,9 @@ def load_model():
 
         try:
             _model = joblib.load(MODEL_PATH)
-            _feature_names = list(pd.read_csv(DATA_PATH, nrows=1).drop(columns=["target"]).columns)
+            _feature_names = list(
+                pd.read_csv(DATA_PATH, nrows=1).drop(columns=["target"]).columns
+            )
         except Exception as exc:
             _model = None
             raise HTTPException(status_code=503, detail=f"Could not load model: {exc}")
@@ -50,9 +74,16 @@ class PredictionRequest(BaseModel):
 
 @app.get("/health")
 def health():
+    try:
+        redis_client.ping()
+        redis_status = "connected"
+    except redis.RedisError:
+        redis_status = "unavailable"
+
     return {
         "status": "ok",
         "model_available": MODEL_PATH.exists(),
+        "redis": redis_status,
     }
 
 
@@ -65,7 +96,11 @@ def predict(request: PredictionRequest):
         extra = sorted(set(request.features.keys()) - set(_feature_names))
         raise HTTPException(
             status_code=422,
-            detail={"message": "Provide exactly the 30 dataset features.", "missing": missing, "extra": extra},
+            detail={
+                "message": "Provide exactly the 30 dataset features.",
+                "missing": missing,
+                "extra": extra,
+            },
         )
 
     row = pd.DataFrame(
@@ -82,10 +117,7 @@ def predict(request: PredictionRequest):
         malignant_index = classes.index(0)
         probability = float(model.predict_proba(row)[0][malignant_index])
 
-    with _stats_lock:
-        _stats["total_predictions"] += 1
-        key = "malignant_predictions" if prediction == 0 else "benign_predictions"
-        _stats[key] += 1
+    update_stats(prediction)
 
     return {
         "prediction": prediction,
@@ -110,5 +142,18 @@ def model_info():
 
 @app.get("/stats")
 def stats():
-    with _stats_lock:
-        return dict(_stats)
+    try:
+        values = redis_client.mget(
+            "total_predictions",
+            "malignant_predictions",
+            "benign_predictions",
+        )
+        return {
+            "total_predictions": int(values[0] or 0),
+            "malignant_predictions": int(values[1] or 0),
+            "benign_predictions": int(values[2] or 0),
+            "storage": "redis",
+        }
+    except redis.RedisError:
+        with _stats_lock:
+            return {**_stats, "storage": "in-memory fallback"}
